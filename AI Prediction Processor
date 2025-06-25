@@ -1,0 +1,673 @@
+// AI Prediction Processing and Transformation Functions
+// This file demonstrates how to create type-safe functions for processing AI model outputs
+
+import {
+  RecognitionResult,
+  DetectedObject,
+  BoundingBox,
+  ExtractedText,
+  DetectedFace,
+  ModelConfiguration,
+  ErrorCode
+} from './image_recognition_types';
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+/**
+ * Custom error class for recognition processing errors
+ */
+class RecognitionProcessingError extends Error {
+  public code: ErrorCode;
+  public details?: Record<string, any>;
+  public timestamp: Date;
+
+  constructor(code: ErrorCode, message: string, details?: Record<string, any>) {
+    super(message);
+    this.name = 'RecognitionProcessingError';
+    this.code = code;
+    this.details = details;
+    this.timestamp = new Date();
+  }
+}
+
+// ============================================================================
+// TYPE DEFINITIONS FOR PROCESSING FUNCTIONS
+// ============================================================================
+
+/**
+ * Processing options for filtering and transforming predictions
+ */
+interface ProcessingOptions {
+  /** Minimum confidence threshold for filtering */
+  minConfidence: number;
+  /** Maximum number of results to return */
+  maxResults?: number;
+  /** Whether to sort results by confidence */
+  sortByConfidence: boolean;
+  /** Whether to merge overlapping detections */
+  mergeOverlapping: boolean;
+  /** Overlap threshold for merging (0-1) */
+  overlapThreshold: number;
+}
+
+/**
+ * Result of processing operations
+ */
+interface ProcessingResult<T> {
+  /** Processed data */
+  data: T;
+  /** Processing statistics */
+  statistics: ProcessingStatistics;
+  /** Any warnings or issues encountered */
+  warnings: string[];
+}
+
+/**
+ * Statistics about the processing operation
+ */
+interface ProcessingStatistics {
+  /** Number of items before processing */
+  inputCount: number;
+  /** Number of items after processing */
+  outputCount: number;
+  /** Items filtered out */
+  filteredCount: number;
+  /** Processing time in milliseconds */
+  processingTime: number;
+  /** Average confidence of results */
+  averageConfidence: number;
+}
+
+/**
+ * Filter criteria for different types of predictions
+ */
+interface FilterCriteria {
+  /** Object labels to include (if empty, include all) */
+  includeLabels?: string[];
+  /** Object labels to exclude */
+  excludeLabels?: string[];
+  /** Minimum bounding box size (relative to image) */
+  minSize?: number;
+  /** Maximum bounding box size (relative to image) */
+  maxSize?: number;
+  /** Specific regions of interest */
+  regionsOfInterest?: BoundingBox[];
+}
+
+// ============================================================================
+// CORE PROCESSING FUNCTIONS
+// ============================================================================
+
+/**
+ * Process and validate AI recognition results
+ * This function ensures data quality and applies basic transformations
+ */
+function processRecognitionResult(
+  result: RecognitionResult,
+  options: ProcessingOptions = {
+    minConfidence: 0.5,
+    sortByConfidence: true,
+    mergeOverlapping: false,
+    overlapThreshold: 0.3
+  }
+): ProcessingResult<RecognitionResult> {
+  const startTime = Date.now();
+  const warnings: string[] = [];
+  
+  // Validate input
+  if (!result || !result.objects) {
+    throw new RecognitionProcessingError(
+      'UNKNOWN_ERROR',
+      'Invalid recognition result provided'
+    );
+  }
+
+  // Create a copy to avoid mutating the original
+  const processedResult: RecognitionResult = {
+    ...result,
+    objects: [...result.objects],
+    text: result.text ? [...result.text] : undefined,
+    faces: result.faces ? [...result.faces] : undefined
+  };
+
+  // Filter objects by confidence
+  const originalObjectCount = processedResult.objects.length;
+  processedResult.objects = processedResult.objects.filter(obj => {
+    if (obj.confidence < options.minConfidence) {
+      warnings.push(`Filtered out object "${obj.label}" with low confidence: ${obj.confidence}`);
+      return false;
+    }
+    return true;
+  });
+
+  // Sort by confidence if requested
+  if (options.sortByConfidence) {
+    processedResult.objects.sort((a, b) => b.confidence - a.confidence);
+  }
+
+  // Merge overlapping detections if requested
+  if (options.mergeOverlapping) {
+    processedResult.objects = mergeOverlappingObjects(
+      processedResult.objects,
+      options.overlapThreshold
+    );
+  }
+
+  // Limit results if specified
+  if (options.maxResults && processedResult.objects.length > options.maxResults) {
+    processedResult.objects = processedResult.objects.slice(0, options.maxResults);
+    warnings.push(`Limited results to ${options.maxResults} objects`);
+  }
+
+  // Recalculate overall confidence
+  processedResult.confidence = calculateOverallConfidence(processedResult.objects);
+
+  const processingTime = Date.now() - startTime;
+  const statistics: ProcessingStatistics = {
+    inputCount: originalObjectCount,
+    outputCount: processedResult.objects.length,
+    filteredCount: originalObjectCount - processedResult.objects.length,
+    processingTime,
+    averageConfidence: calculateAverageConfidence(processedResult.objects)
+  };
+
+  return {
+    data: processedResult,
+    statistics,
+    warnings
+  };
+}
+
+/**
+ * Filter objects based on specific criteria
+ * This allows for targeted analysis of specific object types or regions
+ */
+function filterObjects(
+  objects: DetectedObject[],
+  criteria: FilterCriteria
+): ProcessingResult<DetectedObject[]> {
+  const startTime = Date.now();
+  const warnings: string[] = [];
+  const originalCount = objects.length;
+
+  let filteredObjects = objects.filter(obj => {
+    // Filter by labels
+    if (criteria.includeLabels && criteria.includeLabels.length > 0) {
+      if (!criteria.includeLabels.includes(obj.label)) {
+        return false;
+      }
+    }
+
+    if (criteria.excludeLabels && criteria.excludeLabels.includes(obj.label)) {
+      return false;
+    }
+
+    // Filter by size
+    const objectSize = obj.boundingBox.width * obj.boundingBox.height;
+    if (criteria.minSize && objectSize < criteria.minSize) {
+      warnings.push(`Filtered out small object "${obj.label}" (size: ${objectSize.toFixed(3)})`);
+      return false;
+    }
+
+    if (criteria.maxSize && objectSize > criteria.maxSize) {
+      warnings.push(`Filtered out large object "${obj.label}" (size: ${objectSize.toFixed(3)})`);
+      return false;
+    }
+
+    // Filter by regions of interest
+    if (criteria.regionsOfInterest && criteria.regionsOfInterest.length > 0) {
+      const isInRegion = criteria.regionsOfInterest.some(region => 
+        calculateOverlap(obj.boundingBox, region) > 0.5
+      );
+      if (!isInRegion) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
+  const processingTime = Date.now() - startTime;
+  const statistics: ProcessingStatistics = {
+    inputCount: originalCount,
+    outputCount: filteredObjects.length,
+    filteredCount: originalCount - filteredObjects.length,
+    processingTime,
+    averageConfidence: calculateAverageConfidence(filteredObjects)
+  };
+
+  return {
+    data: filteredObjects,
+    statistics,
+    warnings
+  };
+}
+
+/**
+ * Aggregate objects by label to get summary statistics
+ * Useful for understanding the composition of detected objects
+ */
+function aggregateObjectsByLabel(
+  objects: DetectedObject[]
+): ProcessingResult<Record<string, ObjectAggregation>> {
+  const startTime = Date.now();
+  const aggregations: Record<string, ObjectAggregation> = {};
+
+  objects.forEach(obj => {
+    if (!aggregations[obj.label]) {
+      aggregations[obj.label] = {
+        label: obj.label,
+        count: 0,
+        totalConfidence: 0,
+        averageConfidence: 0,
+        minConfidence: 1,
+        maxConfidence: 0,
+        averageSize: 0,
+        totalSize: 0,
+        instances: []
+      };
+    }
+
+    const agg = aggregations[obj.label];
+    agg.count++;
+    agg.totalConfidence += obj.confidence;
+    agg.minConfidence = Math.min(agg.minConfidence, obj.confidence);
+    agg.maxConfidence = Math.max(agg.maxConfidence, obj.confidence);
+    
+    const size = obj.boundingBox.width * obj.boundingBox.height;
+    agg.totalSize += size;
+    
+    agg.instances.push({
+      id: obj.label + '_' + agg.count,
+      confidence: obj.confidence,
+      boundingBox: obj.boundingBox,
+      size
+    });
+  });
+
+  // Calculate averages
+  Object.values(aggregations).forEach(agg => {
+    agg.averageConfidence = agg.totalConfidence / agg.count;
+    agg.averageSize = agg.totalSize / agg.count;
+  });
+
+  const processingTime = Date.now() - startTime;
+  const statistics: ProcessingStatistics = {
+    inputCount: objects.length,
+    outputCount: Object.keys(aggregations).length,
+    filteredCount: 0,
+    processingTime,
+    averageConfidence: calculateAverageConfidence(objects)
+  };
+
+  return {
+    data: aggregations,
+    statistics,
+    warnings: []
+  };
+}
+
+/**
+ * Transform bounding boxes to different coordinate systems
+ * Useful for converting between relative and absolute coordinates
+ */
+function transformBoundingBoxes(
+  objects: DetectedObject[],
+  targetDimensions: { width: number; height: number },
+  fromRelative: boolean = true
+): ProcessingResult<DetectedObject[]> {
+  const startTime = Date.now();
+  const warnings: string[] = [];
+
+  const transformedObjects = objects.map(obj => {
+    const transformedBox = fromRelative 
+      ? relativeToAbsolute(obj.boundingBox, targetDimensions)
+      : absoluteToRelative(obj.boundingBox, targetDimensions);
+
+    return {
+      ...obj,
+      boundingBox: transformedBox
+    };
+  });
+
+  const processingTime = Date.now() - startTime;
+  const statistics: ProcessingStatistics = {
+    inputCount: objects.length,
+    outputCount: transformedObjects.length,
+    filteredCount: 0,
+    processingTime,
+    averageConfidence: calculateAverageConfidence(transformedObjects)
+  };
+
+  return {
+    data: transformedObjects,
+    statistics,
+    warnings
+  };
+}
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Calculate overlap between two bounding boxes
+ * Returns a value between 0 (no overlap) and 1 (complete overlap)
+ */
+function calculateOverlap(box1: BoundingBox, box2: BoundingBox): number {
+  const x1 = Math.max(box1.x, box2.x);
+  const y1 = Math.max(box1.y, box2.y);
+  const x2 = Math.min(box1.x + box1.width, box2.x + box2.width);
+  const y2 = Math.min(box1.y + box1.height, box2.y + box2.height);
+
+  if (x2 <= x1 || y2 <= y1) {
+    return 0; // No overlap
+  }
+
+  const intersectionArea = (x2 - x1) * (y2 - y1);
+  const box1Area = box1.width * box1.height;
+  const box2Area = box2.width * box2.height;
+  const unionArea = box1Area + box2Area - intersectionArea;
+
+  return intersectionArea / unionArea;
+}
+
+/**
+ * Merge overlapping objects based on overlap threshold
+ * Keeps the object with higher confidence when merging
+ */
+function mergeOverlappingObjects(
+  objects: DetectedObject[],
+  overlapThreshold: number
+): DetectedObject[] {
+  if (objects.length <= 1) return objects;
+
+  const merged: DetectedObject[] = [];
+  const used = new Set<number>();
+
+  for (let i = 0; i < objects.length; i++) {
+    if (used.has(i)) continue;
+
+    let bestObject = objects[i];
+    used.add(i);
+
+    // Find overlapping objects
+    for (let j = i + 1; j < objects.length; j++) {
+      if (used.has(j)) continue;
+
+      const overlap = calculateOverlap(bestObject.boundingBox, objects[j].boundingBox);
+      if (overlap > overlapThreshold) {
+        // Keep the object with higher confidence
+        if (objects[j].confidence > bestObject.confidence) {
+          bestObject = objects[j];
+        }
+        used.add(j);
+      }
+    }
+
+    merged.push(bestObject);
+  }
+
+  return merged;
+}
+
+/**
+ * Calculate overall confidence from object confidences
+ * Uses weighted average based on object sizes
+ */
+function calculateOverallConfidence(objects: DetectedObject[]): number {
+  if (objects.length === 0) return 0;
+
+  let totalWeight = 0;
+  let weightedSum = 0;
+
+  objects.forEach(obj => {
+    const weight = obj.boundingBox.width * obj.boundingBox.height;
+    weightedSum += obj.confidence * weight;
+    totalWeight += weight;
+  });
+
+  return totalWeight > 0 ? weightedSum / totalWeight : 0;
+}
+
+/**
+ * Calculate average confidence of objects
+ */
+function calculateAverageConfidence(objects: DetectedObject[]): number {
+  if (objects.length === 0) return 0;
+  return objects.reduce((sum, obj) => sum + obj.confidence, 0) / objects.length;
+}
+
+/**
+ * Convert relative coordinates to absolute coordinates
+ */
+function relativeToAbsolute(
+  relativeBox: BoundingBox,
+  dimensions: { width: number; height: number }
+): BoundingBox {
+  return {
+    x: relativeBox.x * dimensions.width,
+    y: relativeBox.y * dimensions.height,
+    width: relativeBox.width * dimensions.width,
+    height: relativeBox.height * dimensions.height
+  };
+}
+
+/**
+ * Convert absolute coordinates to relative coordinates
+ */
+function absoluteToRelative(
+  absoluteBox: BoundingBox,
+  dimensions: { width: number; height: number }
+): BoundingBox {
+  return {
+    x: absoluteBox.x / dimensions.width,
+    y: absoluteBox.y / dimensions.height,
+    width: absoluteBox.width / dimensions.width,
+    height: absoluteBox.height / dimensions.height
+  };
+}
+
+// ============================================================================
+// SPECIALIZED PROCESSING FUNCTIONS
+// ============================================================================
+
+/**
+ * Process text extraction results
+ * Filters and cleans up OCR results
+ */
+function processTextResults(
+  textResults: ExtractedText[],
+  options: {
+    minConfidence: number;
+    minLength: number;
+    removeDuplicates: boolean;
+  } = {
+    minConfidence: 0.7,
+    minLength: 2,
+    removeDuplicates: true
+  }
+): ProcessingResult<ExtractedText[]> {
+  const startTime = Date.now();
+  const warnings: string[] = [];
+  const originalCount = textResults.length;
+
+  let processed = textResults.filter(text => {
+    if (text.confidence < options.minConfidence) {
+      warnings.push(`Filtered out low-confidence text: "${text.text}" (${text.confidence})`);
+      return false;
+    }
+    if (text.text.length < options.minLength) {
+      warnings.push(`Filtered out short text: "${text.text}"`);
+      return false;
+    }
+    return true;
+  });
+
+  // Remove duplicates
+  if (options.removeDuplicates) {
+    const seen = new Set<string>();
+    processed = processed.filter(text => {
+      const normalized = text.text.toLowerCase().trim();
+      if (seen.has(normalized)) {
+        warnings.push(`Removed duplicate text: "${text.text}"`);
+        return false;
+      }
+      seen.add(normalized);
+      return true;
+    });
+  }
+
+  const processingTime = Date.now() - startTime;
+  const statistics: ProcessingStatistics = {
+    inputCount: originalCount,
+    outputCount: processed.length,
+    filteredCount: originalCount - processed.length,
+    processingTime,
+    averageConfidence: processed.length > 0 
+      ? processed.reduce((sum, t) => sum + t.confidence, 0) / processed.length 
+      : 0
+  };
+
+  return {
+    data: processed,
+    statistics,
+    warnings
+  };
+}
+
+/**
+ * Process face detection results
+ * Applies face-specific filtering and analysis
+ */
+function processFaceResults(
+  faceResults: DetectedFace[],
+  options: {
+    minConfidence: number;
+    minFaceSize: number;
+    maxFaces: number;
+  } = {
+    minConfidence: 0.8,
+    minFaceSize: 0.01, // 1% of image
+    maxFaces: 10
+  }
+): ProcessingResult<DetectedFace[]> {
+  const startTime = Date.now();
+  const warnings: string[] = [];
+  const originalCount = faceResults.length;
+
+  let processed = faceResults.filter(face => {
+    if (face.confidence < options.minConfidence) {
+      warnings.push(`Filtered out low-confidence face (${face.confidence})`);
+      return false;
+    }
+
+    const faceSize = face.boundingBox.width * face.boundingBox.height;
+    if (faceSize < options.minFaceSize) {
+      warnings.push(`Filtered out small face (size: ${faceSize.toFixed(3)})`);
+      return false;
+    }
+
+    return true;
+  });
+
+  // Sort by confidence and limit
+  processed.sort((a, b) => b.confidence - a.confidence);
+  if (processed.length > options.maxFaces) {
+    processed = processed.slice(0, options.maxFaces);
+    warnings.push(`Limited to ${options.maxFaces} faces`);
+  }
+
+  const processingTime = Date.now() - startTime;
+  const statistics: ProcessingStatistics = {
+    inputCount: originalCount,
+    outputCount: processed.length,
+    filteredCount: originalCount - processed.length,
+    processingTime,
+    averageConfidence: processed.length > 0 
+      ? processed.reduce((sum, f) => sum + f.confidence, 0) / processed.length 
+      : 0
+  };
+
+  return {
+    data: processed,
+    statistics,
+    warnings
+  };
+}
+
+// ============================================================================
+// TYPE DEFINITIONS FOR AGGREGATION RESULTS
+// ============================================================================
+
+/**
+ * Aggregated statistics for objects of the same label
+ */
+interface ObjectAggregation {
+  /** Object label */
+  label: string;
+  /** Number of instances */
+  count: number;
+  /** Sum of all confidences */
+  totalConfidence: number;
+  /** Average confidence */
+  averageConfidence: number;
+  /** Minimum confidence */
+  minConfidence: number;
+  /** Maximum confidence */
+  maxConfidence: number;
+  /** Average size (relative to image) */
+  averageSize: number;
+  /** Sum of all sizes */
+  totalSize: number;
+  /** Individual instances */
+  instances: ObjectInstance[];
+}
+
+/**
+ * Individual object instance with metadata
+ */
+interface ObjectInstance {
+  /** Unique identifier */
+  id: string;
+  /** Confidence score */
+  confidence: number;
+  /** Bounding box */
+  boundingBox: BoundingBox;
+  /** Size relative to image */
+  size: number;
+}
+
+// ============================================================================
+// EXPORT ALL FUNCTIONS AND TYPES
+// ============================================================================
+
+export {
+  // Core processing functions
+  processRecognitionResult,
+  filterObjects,
+  aggregateObjectsByLabel,
+  transformBoundingBoxes,
+  
+  // Specialized processing functions
+  processTextResults,
+  processFaceResults,
+  
+  // Utility functions
+  calculateOverlap,
+  mergeOverlappingObjects,
+  calculateOverallConfidence,
+  calculateAverageConfidence,
+  relativeToAbsolute,
+  absoluteToRelative,
+  
+  // Types
+  ProcessingOptions,
+  ProcessingResult,
+  ProcessingStatistics,
+  FilterCriteria,
+  ObjectAggregation,
+  ObjectInstance
+}; 
