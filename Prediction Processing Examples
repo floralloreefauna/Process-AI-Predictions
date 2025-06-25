@@ -1,0 +1,527 @@
+// AI Prediction Processing Examples
+// This file demonstrates practical usage of the prediction processing functions
+
+import {
+  RecognitionResult,
+  DetectedObject,
+  BoundingBox,
+  ExtractedText,
+  DetectedFace
+} from './image_recognition_types';
+
+import {
+  processRecognitionResult,
+  filterObjects,
+  aggregateObjectsByLabel,
+  transformBoundingBoxes,
+  processTextResults,
+  processFaceResults,
+  ProcessingOptions,
+  FilterCriteria,
+  ProcessingResult
+} from './ai_prediction_processors';
+
+// ============================================================================
+// SAMPLE DATA CREATION
+// ============================================================================
+
+/**
+ * Create sample recognition result for testing
+ * This simulates what an AI model might return
+ */
+function createSampleRecognitionResult(): RecognitionResult {
+  return {
+    id: 'sample_result_001',
+    imageInput: {
+      id: 'sample_image_001',
+      data: 'data:image/jpeg;base64,...',
+      format: 'JPEG',
+      dimensions: { width: 1920, height: 1080 }
+    },
+    objects: [
+      {
+        label: 'person',
+        confidence: 0.95,
+        boundingBox: { x: 0.1, y: 0.2, width: 0.3, height: 0.6 },
+        attributes: { color: 'blue', size: 'medium' },
+        hierarchy: ['person', 'human', 'adult']
+      },
+      {
+        label: 'person',
+        confidence: 0.87,
+        boundingBox: { x: 0.6, y: 0.3, width: 0.25, height: 0.5 },
+        attributes: { color: 'red', size: 'medium' },
+        hierarchy: ['person', 'human', 'adult']
+      },
+      {
+        label: 'car',
+        confidence: 0.92,
+        boundingBox: { x: 0.5, y: 0.4, width: 0.4, height: 0.3 },
+        attributes: { color: 'silver', brand: 'Toyota' },
+        hierarchy: ['vehicle', 'car', 'sedan']
+      },
+      {
+        label: 'dog',
+        confidence: 0.78,
+        boundingBox: { x: 0.8, y: 0.7, width: 0.15, height: 0.2 },
+        attributes: { color: 'brown', size: 'small' },
+        hierarchy: ['animal', 'mammal', 'canine', 'dog']
+      },
+      {
+        label: 'tree',
+        confidence: 0.45, // Low confidence - will be filtered out
+        boundingBox: { x: 0.0, y: 0.0, width: 0.1, height: 0.8 },
+        attributes: { color: 'green' },
+        hierarchy: ['plant', 'tree']
+      }
+    ],
+    text: [
+      {
+        text: 'STOP',
+        confidence: 0.98,
+        boundingBox: { x: 0.4, y: 0.1, width: 0.2, height: 0.1 },
+        language: 'en'
+      },
+      {
+        text: 'STOP', // Duplicate text
+        confidence: 0.95,
+        boundingBox: { x: 0.4, y: 0.1, width: 0.2, height: 0.1 },
+        language: 'en'
+      },
+      {
+        text: 'A', // Short text
+        confidence: 0.85,
+        boundingBox: { x: 0.1, y: 0.1, width: 0.05, height: 0.05 },
+        language: 'en'
+      }
+    ],
+    faces: [
+      {
+        boundingBox: { x: 0.15, y: 0.25, width: 0.2, height: 0.25 },
+        confidence: 0.92,
+        attributes: { wearingGlasses: false, hasBeard: true }
+      },
+      {
+        boundingBox: { x: 0.65, y: 0.35, width: 0.18, height: 0.22 },
+        confidence: 0.88,
+        attributes: { wearingGlasses: true, hasBeard: false }
+      },
+      {
+        boundingBox: { x: 0.85, y: 0.75, width: 0.05, height: 0.08 }, // Small face
+        confidence: 0.75,
+        attributes: { wearingGlasses: false, hasBeard: false }
+      }
+    ],
+    scene: {
+      primary: 'outdoor',
+      secondary: ['street', 'urban'],
+      confidence: 0.89
+    },
+    confidence: 0.85,
+    processingTime: 1200,
+    timestamp: new Date()
+  };
+}
+
+// ============================================================================
+// EXAMPLE 1: BASIC PROCESSING
+// ============================================================================
+
+/**
+ * Example: Basic processing of recognition results
+ * Shows how to clean and validate AI predictions
+ */
+function demonstrateBasicProcessing() {
+  console.log('=== Basic Processing Example ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  console.log(`📊 Original result has ${sampleResult.objects.length} objects`);
+
+  // Process with default options
+  const processed = processRecognitionResult(sampleResult);
+  
+  console.log(`✅ Processed result has ${processed.data.objects.length} objects`);
+  console.log(`📈 Overall confidence: ${(processed.data.confidence * 100).toFixed(1)}%`);
+  console.log(`⏱️  Processing time: ${processed.statistics.processingTime}ms`);
+  console.log(`🔍 Filtered out: ${processed.statistics.filteredCount} objects`);
+  
+  if (processed.warnings.length > 0) {
+    console.log('\n⚠️  Warnings:');
+    processed.warnings.forEach(warning => console.log(`  - ${warning}`));
+  }
+
+  return processed;
+}
+
+// ============================================================================
+// EXAMPLE 2: ADVANCED FILTERING
+// ============================================================================
+
+/**
+ * Example: Advanced filtering with specific criteria
+ * Shows how to target specific object types or regions
+ */
+function demonstrateAdvancedFiltering() {
+  console.log('\n=== Advanced Filtering Example ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  
+  // Filter for people only
+  const peopleFilter: FilterCriteria = {
+    includeLabels: ['person'],
+    minSize: 0.05, // At least 5% of image
+    maxSize: 0.8   // No more than 80% of image
+  };
+
+  const peopleOnly = filterObjects(sampleResult.objects, peopleFilter);
+  
+  console.log(`👥 Found ${peopleOnly.data.length} people after filtering`);
+  console.log(`📊 Filtering statistics:`);
+  console.log(`  - Input: ${peopleOnly.statistics.inputCount} objects`);
+  console.log(`  - Output: ${peopleOnly.statistics.outputCount} objects`);
+  console.log(`  - Filtered: ${peopleOnly.statistics.filteredCount} objects`);
+  console.log(`  - Average confidence: ${(peopleOnly.statistics.averageConfidence * 100).toFixed(1)}%`);
+
+  // Filter for vehicles in specific region
+  const vehicleRegionFilter: FilterCriteria = {
+    includeLabels: ['car', 'truck', 'motorcycle'],
+    regionsOfInterest: [
+      { x: 0.4, y: 0.3, width: 0.6, height: 0.5 } // Right side of image
+    ]
+  };
+
+  const vehiclesInRegion = filterObjects(sampleResult.objects, vehicleRegionFilter);
+  console.log(`🚗 Found ${vehiclesInRegion.data.length} vehicles in region of interest`);
+
+  return { peopleOnly, vehiclesInRegion };
+}
+
+// ============================================================================
+// EXAMPLE 3: AGGREGATION ANALYSIS
+// ============================================================================
+
+/**
+ * Example: Aggregating objects by type
+ * Shows how to get summary statistics for different object categories
+ */
+function demonstrateAggregation() {
+  console.log('\n=== Aggregation Analysis Example ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  const aggregations = aggregateObjectsByLabel(sampleResult.objects);
+
+  console.log('📊 Object Aggregations:');
+  Object.entries(aggregations.data).forEach(([label, agg]) => {
+    console.log(`\n${label.toUpperCase()}:`);
+    console.log(`  Count: ${agg.count}`);
+    console.log(`  Average confidence: ${(agg.averageConfidence * 100).toFixed(1)}%`);
+    console.log(`  Confidence range: ${(agg.minConfidence * 100).toFixed(1)}% - ${(agg.maxConfidence * 100).toFixed(1)}%`);
+    console.log(`  Average size: ${(agg.averageSize * 100).toFixed(1)}% of image`);
+  });
+
+  // Find the most common object type
+  const mostCommon = Object.entries(aggregations.data)
+    .sort(([, a], [, b]) => b.count - a.count)[0];
+  
+  console.log(`\n🏆 Most common object: ${mostCommon[0]} (${mostCommon[1].count} instances)`);
+
+  return aggregations;
+}
+
+// ============================================================================
+// EXAMPLE 4: COORDINATE TRANSFORMATION
+// ============================================================================
+
+/**
+ * Example: Transforming coordinates between different systems
+ * Shows how to convert between relative and absolute coordinates
+ */
+function demonstrateCoordinateTransformation() {
+  console.log('\n=== Coordinate Transformation Example ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  const originalObjects = sampleResult.objects.slice(0, 2); // Take first 2 objects
+
+  console.log('📍 Original relative coordinates:');
+  originalObjects.forEach((obj, index) => {
+    console.log(`  Object ${index + 1} (${obj.label}):`);
+    console.log(`    Position: (${(obj.boundingBox.x * 100).toFixed(1)}%, ${(obj.boundingBox.y * 100).toFixed(1)}%)`);
+    console.log(`    Size: ${(obj.boundingBox.width * 100).toFixed(1)}% × ${(obj.boundingBox.height * 100).toFixed(1)}%`);
+  });
+
+  // Transform to absolute coordinates
+  const targetDimensions = { width: 1920, height: 1080 };
+  const absoluteCoords = transformBoundingBoxes(originalObjects, targetDimensions, true);
+
+  console.log('\n📍 Absolute coordinates (1920×1080):');
+  absoluteCoords.data.forEach((obj, index) => {
+    console.log(`  Object ${index + 1} (${obj.label}):`);
+    console.log(`    Position: (${obj.boundingBox.x.toFixed(0)}, ${obj.boundingBox.y.toFixed(0)})`);
+    console.log(`    Size: ${obj.boundingBox.width.toFixed(0)} × ${obj.boundingBox.height.toFixed(0)}`);
+  });
+
+  // Transform back to relative coordinates
+  const backToRelative = transformBoundingBoxes(absoluteCoords.data, targetDimensions, false);
+
+  console.log('\n📍 Back to relative coordinates:');
+  backToRelative.data.forEach((obj, index) => {
+    console.log(`  Object ${index + 1} (${obj.label}):`);
+    console.log(`    Position: (${(obj.boundingBox.x * 100).toFixed(1)}%, ${(obj.boundingBox.y * 100).toFixed(1)}%)`);
+    console.log(`    Size: ${(obj.boundingBox.width * 100).toFixed(1)}% × ${(obj.boundingBox.height * 100).toFixed(1)}%`);
+  });
+
+  return { absoluteCoords, backToRelative };
+}
+
+// ============================================================================
+// EXAMPLE 5: TEXT PROCESSING
+// ============================================================================
+
+/**
+ * Example: Processing OCR results
+ * Shows how to clean and filter extracted text
+ */
+function demonstrateTextProcessing() {
+  console.log('\n=== Text Processing Example ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  const originalText = sampleResult.text || [];
+
+  console.log(`📝 Original text count: ${originalText.length}`);
+  originalText.forEach((text, index) => {
+    console.log(`  ${index + 1}. "${text.text}" (confidence: ${(text.confidence * 100).toFixed(1)}%)`);
+  });
+
+  // Process text with custom options
+  const processedText = processTextResults(originalText, {
+    minConfidence: 0.8,
+    minLength: 3,
+    removeDuplicates: true
+  });
+
+  console.log(`\n✅ Processed text count: ${processedText.data.length}`);
+  processedText.data.forEach((text, index) => {
+    console.log(`  ${index + 1}. "${text.text}" (confidence: ${(text.confidence * 100).toFixed(1)}%)`);
+  });
+
+  if (processedText.warnings.length > 0) {
+    console.log('\n⚠️  Text processing warnings:');
+    processedText.warnings.forEach(warning => console.log(`  - ${warning}`));
+  }
+
+  return processedText;
+}
+
+// ============================================================================
+// EXAMPLE 6: FACE PROCESSING
+// ============================================================================
+
+/**
+ * Example: Processing face detection results
+ * Shows how to filter and analyze detected faces
+ */
+function demonstrateFaceProcessing() {
+  console.log('\n=== Face Processing Example ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  const originalFaces = sampleResult.faces || [];
+
+  console.log(`👥 Original face count: ${originalFaces.length}`);
+  originalFaces.forEach((face, index) => {
+    const size = face.boundingBox.width * face.boundingBox.height;
+    console.log(`  Face ${index + 1}: confidence ${(face.confidence * 100).toFixed(1)}%, size ${(size * 100).toFixed(1)}%`);
+  });
+
+  // Process faces with custom options
+  const processedFaces = processFaceResults(originalFaces, {
+    minConfidence: 0.8,
+    minFaceSize: 0.02, // 2% of image
+    maxFaces: 5
+  });
+
+  console.log(`\n✅ Processed face count: ${processedFaces.data.length}`);
+  processedFaces.data.forEach((face, index) => {
+    const size = face.boundingBox.width * face.boundingBox.height;
+    console.log(`  Face ${index + 1}: confidence ${(face.confidence * 100).toFixed(1)}%, size ${(size * 100).toFixed(1)}%`);
+  });
+
+  if (processedFaces.warnings.length > 0) {
+    console.log('\n⚠️  Face processing warnings:');
+    processedFaces.warnings.forEach(warning => console.log(`  - ${warning}`));
+  }
+
+  return processedFaces;
+}
+
+// ============================================================================
+// EXAMPLE 7: COMPLEX WORKFLOW
+// ============================================================================
+
+/**
+ * Example: Complex processing workflow
+ * Shows how to combine multiple processing steps
+ */
+function demonstrateComplexWorkflow() {
+  console.log('\n=== Complex Processing Workflow ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  
+  // Step 1: Basic processing
+  console.log('🔄 Step 1: Basic processing...');
+  const step1 = processRecognitionResult(sampleResult, {
+    minConfidence: 0.6,
+    sortByConfidence: true,
+    mergeOverlapping: true,
+    overlapThreshold: 0.3,
+    maxResults: 10
+  });
+
+  // Step 2: Filter for people and vehicles
+  console.log('🔄 Step 2: Filtering for people and vehicles...');
+  const peopleAndVehicles = filterObjects(step1.data.objects, {
+    includeLabels: ['person', 'car', 'truck', 'motorcycle']
+  });
+
+  // Step 3: Aggregate by type
+  console.log('🔄 Step 3: Aggregating by object type...');
+  const aggregations = aggregateObjectsByLabel(peopleAndVehicles.data);
+
+  // Step 4: Process text
+  console.log('🔄 Step 4: Processing extracted text...');
+  const processedText = processTextResults(sampleResult.text || []);
+
+  // Step 5: Process faces
+  console.log('🔄 Step 5: Processing detected faces...');
+  const processedFaces = processFaceResults(sampleResult.faces || []);
+
+  // Summary
+  console.log('\n📊 Workflow Summary:');
+  console.log(`  - Objects processed: ${step1.statistics.inputCount} → ${step1.statistics.outputCount}`);
+  console.log(`  - People/vehicles found: ${peopleAndVehicles.data.length}`);
+  console.log(`  - Object types: ${Object.keys(aggregations.data).length}`);
+  console.log(`  - Text elements: ${processedText.data.length}`);
+  console.log(`  - Faces detected: ${processedFaces.data.length}`);
+  console.log(`  - Total processing time: ${step1.statistics.processingTime + peopleAndVehicles.statistics.processingTime + aggregations.statistics.processingTime + processedText.statistics.processingTime + processedFaces.statistics.processingTime}ms`);
+
+  return {
+    step1,
+    peopleAndVehicles,
+    aggregations,
+    processedText,
+    processedFaces
+  };
+}
+
+// ============================================================================
+// EXAMPLE 8: PERFORMANCE ANALYSIS
+// ============================================================================
+
+/**
+ * Example: Performance analysis of processing functions
+ * Shows how to measure and compare processing efficiency
+ */
+function demonstratePerformanceAnalysis() {
+  console.log('\n=== Performance Analysis ===\n');
+
+  const sampleResult = createSampleRecognitionResult();
+  const iterations = 1000;
+
+  // Test basic processing performance
+  const basicStart = Date.now();
+  for (let i = 0; i < iterations; i++) {
+    processRecognitionResult(sampleResult);
+  }
+  const basicTime = Date.now() - basicStart;
+
+  // Test filtering performance
+  const filterStart = Date.now();
+  for (let i = 0; i < iterations; i++) {
+    filterObjects(sampleResult.objects, { includeLabels: ['person'] });
+  }
+  const filterTime = Date.now() - filterStart;
+
+  // Test aggregation performance
+  const aggStart = Date.now();
+  for (let i = 0; i < iterations; i++) {
+    aggregateObjectsByLabel(sampleResult.objects);
+  }
+  const aggTime = Date.now() - aggStart;
+
+  console.log(`📈 Performance Results (${iterations} iterations each):`);
+  console.log(`  - Basic processing: ${basicTime}ms (${(basicTime / iterations).toFixed(2)}ms per operation)`);
+  console.log(`  - Object filtering: ${filterTime}ms (${(filterTime / iterations).toFixed(2)}ms per operation)`);
+  console.log(`  - Object aggregation: ${aggTime}ms (${(aggTime / iterations).toFixed(2)}ms per operation)`);
+
+  // Calculate throughput
+  const basicThroughput = (iterations / basicTime) * 1000;
+  const filterThroughput = (iterations / filterTime) * 1000;
+  const aggThroughput = (iterations / aggTime) * 1000;
+
+  console.log(`\n🚀 Throughput (operations per second):`);
+  console.log(`  - Basic processing: ${basicThroughput.toFixed(0)} ops/sec`);
+  console.log(`  - Object filtering: ${filterThroughput.toFixed(0)} ops/sec`);
+  console.log(`  - Object aggregation: ${aggThroughput.toFixed(0)} ops/sec`);
+
+  return { basicTime, filterTime, aggTime };
+}
+
+// ============================================================================
+// MAIN DEMONSTRATION FUNCTION
+// ============================================================================
+
+/**
+ * Run all examples to demonstrate the processing functions
+ */
+async function runAllProcessingExamples() {
+  console.log('🚀 AI Prediction Processing Examples\n');
+  console.log('This demonstration shows how to process and transform AI model predictions\n');
+
+  try {
+    // Run all examples
+    const basic = demonstrateBasicProcessing();
+    const filtering = demonstrateAdvancedFiltering();
+    const aggregation = demonstrateAggregation();
+    const coordinates = demonstrateCoordinateTransformation();
+    const text = demonstrateTextProcessing();
+    const faces = demonstrateFaceProcessing();
+    const workflow = demonstrateComplexWorkflow();
+    const performance = demonstratePerformanceAnalysis();
+
+    console.log('\n✅ All examples completed successfully!');
+    console.log('\n💡 Key Takeaways:');
+    console.log('  - Type-safe processing ensures data quality');
+    console.log('  - Flexible filtering enables targeted analysis');
+    console.log('  - Aggregation provides summary insights');
+    console.log('  - Coordinate transformations support different use cases');
+    console.log('  - Performance monitoring helps optimize workflows');
+
+    return {
+      basic,
+      filtering,
+      aggregation,
+      coordinates,
+      text,
+      faces,
+      workflow,
+      performance
+    };
+
+  } catch (error) {
+    console.error('❌ Error running examples:', error);
+    throw error;
+  }
+}
+
+// Export functions for use in other modules
+export {
+  createSampleRecognitionResult,
+  demonstrateBasicProcessing,
+  demonstrateAdvancedFiltering,
+  demonstrateAggregation,
+  demonstrateCoordinateTransformation,
+  demonstrateTextProcessing,
+  demonstrateFaceProcessing,
+  demonstrateComplexWorkflow,
+  demonstratePerformanceAnalysis,
+  runAllProcessingExamples
+};
